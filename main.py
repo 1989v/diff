@@ -141,15 +141,24 @@ def calculate_line_diffs(text1: str, text2: str) -> List[Dict[str, Any]]:
     
     return line_diffs
 
+from fastapi import Request
+
 @app.post("/compare", response_model=CompareResult)
-async def compare(req: CompareRequest):
-    try:
-        text1 = await fetch_content(str(req.url1))
-        text2 = await fetch_content(str(req.url2))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error fetching URLs: {e}")
+async def compare(request: Request):
+    data = await request.json()
+
+    # 텍스트 직접 비교 모드
+    if "raw1" in data and "raw2" in data:
+        text1 = data["raw1"]
+        text2 = data["raw2"]
+    else:
+        try:
+            text1 = await fetch_content(str(data["url1"]))
+            text2 = await fetch_content(str(data["url2"]))
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error fetching URLs: {e}")
 
     json1 = try_parse_json(text1)
     json2 = try_parse_json(text2)

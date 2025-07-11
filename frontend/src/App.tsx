@@ -68,6 +68,11 @@ function App() {
   const [url2, setUrl2] = useState("");
   const [content1, setContent1] = useState("");
   const [content2, setContent2] = useState("");
+  // 텍스트 직접 입력 모드
+  const [manualMode, setManualMode] = useState(false);
+  const [text1, setText1] = useState("");
+  const [text2, setText2] = useState("");
+  const [urlTransform, setUrlTransform] = useState<'none' | 'decode' | 'encode'>('decode');
   const [lineDiffs, setLineDiffs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -77,6 +82,7 @@ function App() {
   const [decorations1, setDecorations1] = useState<string[]>([]);
   const [decorations2, setDecorations2] = useState<string[]>([]);
 
+  // URL 비교
   const fetchAndCompare = async () => {
     setLoading(true);
     setError("");
@@ -105,6 +111,106 @@ function App() {
       setLineDiffs(data.line_diffs || []);
       setShowDiff(true);
       
+    } catch (e: any) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // URL 변환
+  function urlTransformText(text: string, mode: 'decode' | 'encode') {
+    try {
+      return mode === 'decode' ? decodeURIComponent(text) : encodeURIComponent(text);
+    } catch {
+      return text;
+    }
+  }
+
+  // GET ...\n{...} 형식도 JSON pretty 처리
+  function extractAndPrettyJson(text: string) {
+    const lines = text.split('\n');
+    const idx = lines.findIndex(line => line.trim().startsWith('{') || line.trim().startsWith('['));
+    if (idx !== -1) {
+      const jsonPart = lines.slice(idx).join('\n');
+      try {
+        const parsed = JSON.parse(jsonPart);
+        return JSON.stringify(parsed, null, 2);
+      } catch {}
+    }
+    // 전체 파싱도 시도
+    try {
+      const parsed = JSON.parse(text);
+      return JSON.stringify(parsed, null, 2);
+    } catch {}
+    return text;
+  }
+
+  // 텍스트 직접 입력 비교
+  const fetchAndCompareText = async () => {
+    setLoading(true);
+    setError("");
+    setContent1("");
+    setContent2("");
+    setLineDiffs([]);
+    setShowDiff(false);
+    try {
+      let pretty1 = text1;
+      let pretty2 = text2;
+      if (urlTransform !== 'none') {
+        // URL 디코딩/인코딩 모드
+        if (text1 && !text2) {
+          pretty2 = urlTransformText(text1, urlTransform);
+        } else if (!text1 && text2) {
+          pretty1 = urlTransformText(text2, urlTransform);
+        } else {
+          pretty1 = urlTransformText(text1, urlTransform);
+          pretty2 = urlTransformText(text2, urlTransform);
+        }
+      } else {
+        // JSON pretty 모드
+        if (text1 && !text2) {
+          pretty1 = text1;
+          pretty2 = extractAndPrettyJson(text1);
+        } else if (!text1 && text2) {
+          pretty1 = text2;
+          pretty2 = extractAndPrettyJson(text2);
+        } else {
+          pretty1 = extractAndPrettyJson(text1);
+          pretty2 = extractAndPrettyJson(text2);
+        }
+      }
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          raw1: pretty1,
+          raw2: pretty2
+        }),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText);
+      }
+      const data = await res.json();
+      // 한쪽만 입력이고 JSON pretty 모드면 왼쪽은 입력값 그대로, 오른쪽만 pretty
+      if (urlTransform === 'none') {
+        if (text1 && !text2) {
+          setContent1(text1); // 원본 그대로
+          setContent2(data.content2 || "");
+        } else if (!text1 && text2) {
+          setContent1(text2); // 원본 그대로
+          setContent2(data.content2 || "");
+        } else {
+          setContent1(data.content1 || "");
+          setContent2(data.content2 || "");
+        }
+      } else {
+        setContent1(data.content1 || "");
+        setContent2(data.content2 || "");
+      }
+      setLineDiffs(data.line_diffs || []);
+      setShowDiff(true);
     } catch (e: any) {
       setError(e.message || String(e));
     } finally {
@@ -250,29 +356,72 @@ function App() {
   return (
     <div className={styles.container}>
       <div className={styles["url-bar"]}>
-        <input
-          className={styles["url-input"]}
-          type="text"
-          placeholder="첫 번째 URL 입력"
-          value={url1}
-          onChange={(e) => setUrl1(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && url1 && url2 && !loading) fetchAndCompare();
-          }}
-        />
-        <input
-          className={styles["url-input"]}
-          type="text"
-          placeholder="두 번째 URL 입력"
-          value={url2}
-          onChange={(e) => setUrl2(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && url1 && url2 && !loading) fetchAndCompare();
-          }}
-        />
-        <button className={styles["compare-btn"]} onClick={fetchAndCompare} disabled={loading || !url1 || !url2}>
-          {loading ? "비교 중..." : "비교"}
-        </button>
+        <label style={{ color: '#ccc', marginRight: 16 }}>
+          <input type="checkbox" checked={manualMode} onChange={e => setManualMode(e.target.checked)} /> 텍스트 직접 입력
+        </label>
+        {manualMode && (
+          <label style={{ color: '#ccc', marginRight: 16 }}>
+            URL 변환:
+            <select
+              value={urlTransform}
+              onChange={e => setUrlTransform(e.target.value as 'none' | 'decode' | 'encode')}
+              style={{ marginLeft: 8 }}
+            >
+              <option value="none">없음 (JSON pretty)</option>
+              <option value="decode">디코딩</option>
+              <option value="encode">인코딩</option>
+            </select>
+          </label>
+        )}
+        {!manualMode ? (
+          <>
+            <input
+              className={styles["url-input"]}
+              type="text"
+              placeholder="첫 번째 URL 입력"
+              value={url1}
+              onChange={(e) => setUrl1(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && url1 && url2 && !loading) fetchAndCompare();
+              }}
+            />
+            <input
+              className={styles["url-input"]}
+              type="text"
+              placeholder="두 번째 URL 입력"
+              value={url2}
+              onChange={(e) => setUrl2(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && url1 && url2 && !loading) fetchAndCompare();
+              }}
+            />
+            <button className={styles["compare-btn"]} onClick={fetchAndCompare} disabled={loading || !url1 || !url2}>
+              {loading ? "비교 중..." : "비교"}
+            </button>
+          </>
+        ) : (
+          <>
+            <textarea
+              className={styles["url-input"]}
+              style={{ height: 60, resize: 'vertical' }}
+              placeholder="첫 번째 텍스트 입력 (JSON 자동 포매팅)"
+              value={text1}
+              onChange={e => setText1(e.target.value)}
+              disabled={loading}
+            />
+            <textarea
+              className={styles["url-input"]}
+              style={{ height: 60, resize: 'vertical' }}
+              placeholder="두 번째 텍스트 입력 (JSON 자동 포매팅)"
+              value={text2}
+              onChange={e => setText2(e.target.value)}
+              disabled={loading}
+            />
+            <button className={styles["compare-btn"]} onClick={fetchAndCompareText} disabled={loading || (!text1 && !text2)}>
+              {loading ? "비교 중..." : "비교"}
+            </button>
+          </>
+        )}
       </div>
       {error && (
         <div style={{ color: "#ff6161", padding: "0.5rem 1rem", backgroundColor: "#ffebee", borderRadius: "4px", margin: "0.5rem 0" }}>
@@ -287,7 +436,7 @@ function App() {
           <MonacoEditor
             height="100%"
             language="json"
-            value={safeUnescape(content1)}
+            value={content1}
             onMount={(editor, monaco) => {
               editor1Ref.current = editor;
               editor.onMouseDown((e) => {
